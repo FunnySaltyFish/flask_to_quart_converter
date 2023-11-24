@@ -38,7 +38,7 @@ from quart import Quart, request, jsonify
 app = Quart(__name__)
 ```
 
-即可。这一步直接在 VSCode 中全局替换。
+即可。这一步直接在 VSCode 中完成。
 
 #### 一些 Extension 的替换
 项目中用到了一些 Flask 的 Extension，比如 `flask_cors`、`flask_jwt_extended` 等，经过一番查询后，发现这些 Extension 很多都有对应的 Quart 版本，参考 [Quart Extensions](https://pgjones.gitlab.io/quart/how_to_guides/quart_extensions.html#quart-extensions) 找到对应的替换，按 README 中的说明进行替换即可。很多 Extension 也都保持了与 Flask 版本相同的 API，所以替换起来也很简单。
@@ -82,7 +82,7 @@ async def test():
         return await make_response(f"error, {e}")
 ```
 
-同志们，这工作量就有点大了。如果手动修改，意味着要对每一个函数都加上 `async`、对每一个 awaitable 的 `request` 对象的属性提取出变量并更改调用、对每个 `make_response` 都要加上 `await`……怎么办？开摆！
+家人们，这工作量就有点大了。如果手动修改，意味着要对每一个函数都加上 `async`、对每一个 awaitable 的 `request` 对象的属性提取出变量并更改调用、对每个 `make_response` 都要加上 `await`……怎么办？开摆！
 
 好吧，开摆是不可能的，咱们还是来想一想有没有更好的办法。正好前两天参加 DevFest 时有 **元编程** 的主题，虽然讲的是 Kotlin 的，但不如就来用 Python 做个实践
 
@@ -96,7 +96,7 @@ Python的 `ast` 模块是一个强大的工具，用于对 Python 代码进行�
 
 ```python
 import ast
-from astpretty import pprint # 用于打印出更易读的AST
+from astpretty import pprint # 用于打印出更易读的AST，此模块需要 pip install
 
 code = "x = 1 + 2"
 tree = ast.parse(code)
@@ -132,7 +132,7 @@ Module(
 
 上面的结构描绘了整个代码的结构，可以看到，`x = 1 + 2` 被解析成了一个 `Assign` 节点，其 `targets` 为 `x`，`value` 为 `1 + 2`。`1 + 2` 被解析成了一个 `BinOp` 节点，其 `left` 为 `1`，`op` 为 `+`，`right` 为 `2`。
 
-通过读取和修改这棵语法树，我们可以实现上述功能。ast 提供了两个类来实现这一功能：`NodeVisitor` 和 `NodeTransformer`。前者用于遍历语法树，后者用于修改语法树。来简单看看
+通过读取和修改这棵语法树，我们可以实现想要的功能。ast 提供了两个类来实现：`NodeVisitor` 和 `NodeTransformer`。前者用于遍历语法树，后者用于修改语法树。来简单看看
 
 
 ##### 使用 `NodeVisitor` 遍历AST
@@ -151,7 +151,7 @@ visitor.visit(tree)
 上面的代码输出为
 > Found an assignment: x
 
-除了遍历，我们也要能够修改语法树。这时，就是 `NodeTransformer` 登场了。
+除了遍历，我们也要能够修改语法树。这就是 `NodeTransformer` 登场的时候了
 
 #### 使用 `NodeTransformer` 修改AST
 比如说，把 `x = 1 + 2` 改成 `n = 1 + 2`，我们可以这样做：
@@ -254,7 +254,8 @@ code = "request.form.get('a', 0)"
 tree = ast.parse(code)
 transformer = FlaskCodeTransformer()
 transformer.visit(tree)
-print(transformer.attr_to_str(tree.body[0].value.func)) # request.form.get
+print(transformer.attr_to_str(tree.body[0].value.func)) 
+# request.form.get
 ```
 
 因此我们就可以预定义一个列表，如果满足这个列表中的条件，就进行修改：
@@ -287,24 +288,26 @@ EXTRACT_PROPERTY_RULES = {
 if isinstance(func, ast.Attribute):
     attr = self.attr_to_str(func)
 
-# ...
+# 省略一些代码...
 rules = deepcopy(EXTRACT_PROPERTY_RULES)
 for k, v in rules.items():
     # 例：request.form.get("a", 0)，提取 form = await request.form; a = form.get("a", 0)
     # 其余的变量，比如 b = request.form.get("b", "")，则改成 b = form.get("b", "")
     if attr.startswith(k):
+        # 如果没提取过，就提取个新变量并 await
         if not v["extracted"]:
             var = v["var"]
             new_node = ast.parse(f"{var} = await {k}")
             self.insert_node(body=stat.body, node=new_node)
             v["extracted"] = True
+        # 修改原有的 request.form.get -> form.get
         if v["extracted"]:
             func.value = ast.Name(id=v["var"], ctx=ast.Load())
 ```
 
 上面的代码逻辑很简单，就是判断是否满足 `request.form.xxx` 这种形式，如果满足，就提取出来（创建一个新节点，并且把它插入到 AST 中），然后将原本的 `request.form.get` 改成 `form.get`（由于是从外到内 `get`、`form`、`request`，所以只需要去掉最内层的 `request` 即可）。
 
-参考这部分 AST 树看代码：
+举个栗子，参考这部分 AST 树看代码：
 ```
 func=Attribute(
     lineno=1,
@@ -325,16 +328,16 @@ func=Attribute(
 ),
 ```
 
-而 `func.value = ast.Name(id=v["var"], ctx=ast.Load())` 这一句中
+此时， `func.value = ast.Name(id=v["var"], ctx=ast.Load())` 这一句中
 
 - `func` 为 `Attribute` 节点，本来的 `value` 为 `form -> request`
-- 现在我们去掉最里层的 `request`，变成 v["var"]（提取出来的变量名，比如 `form`。）
+- 现在我们去掉最里层的 `request`，变成 v["var"]（提取出来的变量名，比如 `form`）
 - 也就完成了 a = request.form.get("a", 0) -> a = form.get("a", 0) 的转换
 
 其他的代码也是类似的，总的来说就是不断重复 `看 AST 树的结构` -> `改对应需要的部分` -> `测试` -> `找出哪里没改对或者改漏了` -> `再继续改` 的过程。
 
 ### 结果
-总之，经过一番倒腾，最终的代码能够做到，把：
+总之，经过一番倒腾，最终的代码能够把：
 ```python
 @bp_api.route("/")
 def test():
@@ -384,12 +387,12 @@ async def test():
 ### 局限
 当然，这个代码还有很多局限性，比如：
 - 转换的代码必须是符合一定规范的，比如 `request.form.get("a", 0)`。因为是按 case 编写的，所以只适配了我自己的部分写法
-- 由于 ast 模块的限制，出来的代码没有注释、字符串变成被 '' 包裹的、原有格式丢失等等
+- 由于 ast 模块的限制，出来的代码没有注释、字符串变成被 '  '（单引号） 包裹的、原有格式丢失等等
 
 但又不是不能用.jpg
 
 ### 结尾
-本文的代码已经开源到了 [Github]()，分为两个文件：
+本文的代码已经开源到了 [Github](https://github.com/FunnySaltyFish/flask_to_quart_converter)，分为两个文件：
 - `lib` 为主体代码，包括全部逻辑，单独运行用于测试
 - `convert_to_quart.py` 为转换代码，用于转换 Flask 项目，会通过命令行的交互式操作来完成转换
 
